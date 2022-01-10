@@ -3,9 +3,6 @@ module Seatsio
     class SeatsioException < StandardError
     end
 
-    class RateLimitExceededException < SeatsioException
-    end
-
     class NoMorePagesException < SeatsioException
     end
 

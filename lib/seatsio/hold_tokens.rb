@@ -11,8 +11,8 @@ module Seatsio
 
   class HoldTokensClient
     # @return [Seatsio::HoldTokensClient]
-    def initialize(http_client)
-      @http_client = http_client
+    def initialize(secret_key, workspace_key, base_url)
+      @http_client = ::Seatsio::HttpClient.new(secret_key, workspace_key, base_url)
     end
 
     def create(expires_in_minutes: nil)
@@ -21,18 +21,18 @@ module Seatsio
         body[:expiresInMinutes] = expires_in_minutes
       end
       response = @http_client.post('hold-tokens', body)
-      HoldToken.new(response)
+      Domain::HoldToken.new(response)
     end
 
     def retrieve(hold_token)
       response = @http_client.get("/hold-tokens/#{hold_token}")
-      HoldToken.new(response)
+      Domain::HoldToken.new(response)
     end
 
     def expire_in_minutes(hold_token, expires_in_minutes = nil)
       body = {"expiresInMinutes": expires_in_minutes}
       response = @http_client.post("/hold-tokens/#{hold_token}", body)
-      HoldToken.new(response)
+      Domain::HoldToken.new(response)
     end
   end
 end

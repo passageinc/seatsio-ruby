@@ -6,39 +6,35 @@ require "uri"
 
 module Seatsio
   class HttpClient
-    def initialize(secret_key, workspace_key, base_url, max_retries)
+    def initialize(secret_key, workspace_key, base_url)
       @secret_key = Base64.encode64(secret_key)
       @workspace_key = workspace_key
       @base_url = base_url
-      @max_retries = max_retries
     end
 
     def execute(*args)
       begin
-        headers = { :Authorization => "Basic #{@secret_key}" }
+        headers = {:Authorization => "Basic #{@secret_key}"}
         unless @workspace_key.nil?
           headers[:'X-Workspace-Key'] = @workspace_key
         end
+        if args[2].include? :params
+          headers[:params] = args[2][:params]
+        end
+        #if args[2] != nil || args[0] == :post
+        #  headers[:params] = args[2]
+        #end
 
         url = "#{@base_url}/#{args[1]}"
 
-        if args[2].include? :params
-          params = args[2][:params]
-          if params.is_a? Hash
-            headers[:params] = params
-          else
-            url += "?" + params
-          end
-        end
-
-        request_options = { method: args[0], url: url, headers: headers }
+        request_options = {method: args[0], url: url, headers: headers}
 
         if args[0] == :post
           args[2].delete :params
           request_options[:payload] = args[2].to_json
         end
 
-        response = execute_with_retries(request_options)
+        response = RestClient::Request.execute(request_options)
 
         # If RAW
         if args[3]
@@ -48,32 +44,14 @@ module Seatsio
       rescue RestClient::NotFound => e
         raise Exception::NotFoundException.new(e.response)
       rescue RestClient::ExceptionWithResponse => e
-        if e.response.code == 429
-          raise Exception::RateLimitExceededException.new(e.response)
-        else
-          raise Exception::SeatsioException.new(e.response)
+        if e.response.include? "there is no page after" || e.response.empty?
+          raise Exception::NoMorePagesException
         end
+        raise Exception::SeatsioException.new(e.response)
       rescue RestClient::Exceptions::Timeout
         raise Exception::SeatsioException.new("Timeout ERROR")
       rescue SocketError
         raise Exception::SeatsioException.new("Failed to connect to backend")
-      end
-    end
-
-    def execute_with_retries(request_options)
-      retry_count = 0
-      while true
-        begin
-          return RestClient::Request.execute(request_options)
-        rescue RestClient::ExceptionWithResponse => e
-          if e.response.code != 429 || retry_count >= @max_retries
-            raise e
-          else
-            wait_time = (2 ** (retry_count + 2)) / 10.0
-            sleep(wait_time)
-            retry_count += 1
-          end
-        end
       end
     end
 
@@ -82,7 +60,7 @@ module Seatsio
     end
 
     def get(endpoint, params = {})
-      payload = { :params => params }
+      payload = {:params => params}
       execute(:get, endpoint, payload)
     end
 

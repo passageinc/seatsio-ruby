@@ -11,25 +11,24 @@ require "seatsio/events/change_best_available_object_status_request"
 module Seatsio
 
   class EventsClient
-    def initialize(http_client)
-      @http_client = http_client
+    def initialize(secret_key, workspace_key, base_url)
+      @http_client = ::Seatsio::HttpClient.new(secret_key, workspace_key, base_url)
     end
 
-    def create(chart_key: nil, event_key: nil, table_booking_config: nil, social_distancing_ruleset_key: nil)
-      payload = build_event_request(chart_key: chart_key, event_key: event_key,
-                                    table_booking_config: table_booking_config, social_distancing_ruleset_key: social_distancing_ruleset_key)
+    def create(chart_key: nil, event_key: nil, book_whole_tables: nil, table_booking_modes: nil)
+      payload = build_event_request(chart_key: chart_key, event_key: event_key, book_whole_tables: book_whole_tables, table_booking_modes: table_booking_modes)
       response = @http_client.post("events", payload)
-      Event.new(response)
+      Domain::Event.new(response)
     end
 
     def create_multiple(key: nil, event_creation_params: nil)
       payload = build_events_request(chart_key: key, event_creation_params: event_creation_params)
       response = @http_client.post("events/actions/create-multiple", payload)
-      Events.new(response).events
+      Domain::Events.new(response).events
     end
 
-    def update(key:, chart_key: nil, event_key: nil, table_booking_config: nil, social_distancing_ruleset_key: nil)
-      payload = build_event_request(chart_key: chart_key, event_key: event_key, table_booking_config: table_booking_config, social_distancing_ruleset_key: social_distancing_ruleset_key)
+    def update(key:, chart_key: nil, event_key: nil, book_whole_tables: nil, table_booking_modes: nil)
+      payload = build_event_request(chart_key: chart_key, event_key: event_key, book_whole_tables: book_whole_tables, table_booking_modes: table_booking_modes)
       @http_client.post("/events/#{key}", payload)
     end
 
@@ -43,88 +42,84 @@ module Seatsio
       @http_client.post("events/#{key}/actions/update-extra-data", payload)
     end
 
-    def retrieve_object_info(key:, label:)
-      result = retrieve_object_infos key: key, labels: [label]
-      result[label]
+    def retrieve_object_status(key:, object_key:)
+      url = "events/#{key}/objects/#{CGI::escape(object_key).gsub('+', '%20')}"
+      response = @http_client.get(url)
+      Domain::ObjectStatus.new(response)
     end
 
-    def retrieve_object_infos(key:, labels:)
-      url = "events/#{key}/objects"
-      query_params = URI.encode_www_form(labels.map { |label| ['label', label]})
-      response = @http_client.get(url, query_params)
-      response.each do |key, value|
-        response[key] = EventObjectInfo.new(value)
-      end
-      response
+    # @param [Object] event_key_or_keys
+    # @param [Object] object_or_objects
+    # @param [Object] hold_token
+    # @param [Object] order_id
+    def book(event_key_or_keys, object_or_objects, hold_token = nil, order_id = nil, keep_extra_data = nil)
+      self.change_object_status(event_key_or_keys, object_or_objects, Domain::ObjectStatus::BOOKED, hold_token, order_id, keep_extra_data)
     end
 
-    def book(event_key_or_keys, object_or_objects, hold_token: nil, order_id: nil, keep_extra_data: nil, ignore_channels: nil, channel_keys: nil, ignore_social_distancing: nil)
-      self.change_object_status(event_key_or_keys, object_or_objects, Seatsio::EventObjectInfo::BOOKED, hold_token: hold_token, order_id: order_id, keep_extra_data: keep_extra_data, ignore_channels: ignore_channels, channel_keys: channel_keys, ignore_social_distancing: ignore_social_distancing)
-    end
-
-    def change_object_status(event_key_or_keys, object_or_objects, status, hold_token: nil, order_id: nil, keep_extra_data: nil, ignore_channels: nil, channel_keys: nil, ignore_social_distancing: nil, allowed_previous_statuses: nil, rejected_previous_statuses: nil)
-      request = create_change_object_status_request(object_or_objects, status, hold_token, order_id, event_key_or_keys, keep_extra_data, ignore_channels, channel_keys, ignore_social_distancing, allowed_previous_statuses, rejected_previous_statuses)
+    def change_object_status(event_key_or_keys, object_or_objects, status, hold_token = nil, order_id = nil, keep_extra_data = nil)
+      request = create_change_object_status_request(object_or_objects, status, hold_token, order_id, event_key_or_keys, keep_extra_data)
       request[:params] = {
           :expand => 'objects'
       }
-      response = @http_client.post("events/groups/actions/change-object-status", request)
-      ChangeObjectStatusResult.new(response)
+      response = @http_client.post("seasons/actions/change-object-status", request)
+      Domain::ChangeObjectStatusResult.new(response)
     end
 
     def change_object_status_in_batch(status_change_requests)
       request = {
           :statusChanges => status_change_requests,
-          :params => {:expand => 'objects'}
+          :params => { :expand => 'objects' }
       }
       response = @http_client.post("events/actions/change-object-status", request)
-      ChangeObjectStatusInBatchResult.new(response).results
+      Domain::ChangeObjectStatusInBatchResult.new(response).results
     end
 
-    def hold(event_key_or_keys, object_or_objects, hold_token, order_id: nil, keep_extra_data: nil, ignore_channels: nil, channel_keys: nil, ignore_social_distancing: nil)
-      change_object_status(event_key_or_keys, object_or_objects, Seatsio::EventObjectInfo::HELD, hold_token: hold_token, order_id: order_id, keep_extra_data: keep_extra_data, ignore_channels: ignore_channels, channel_keys: channel_keys, ignore_social_distancing: ignore_social_distancing)
+    def hold(event_key_or_keys, object_or_objects, hold_token, order_id = nil, keep_extra_data = nil)
+      change_object_status(event_key_or_keys, object_or_objects, Domain::ObjectStatus::HELD, hold_token, order_id, keep_extra_data)
     end
 
-    def change_best_available_object_status(key, number, status, categories: nil, hold_token: nil, extra_data: nil, ticket_types: nil, order_id: nil, keep_extra_data: nil, ignore_channels: nil, channel_keys: nil)
-      request = create_change_best_available_object_status_request(number, status, categories, extra_data, ticket_types, hold_token, order_id, keep_extra_data, ignore_channels, channel_keys)
+    def change_best_available_object_status(key, number, status, categories: nil, hold_token: nil, extra_data: nil, order_id: nil, keep_extra_data: nil)
+      request = create_change_best_available_object_status_request(number, status, categories, extra_data, hold_token, order_id, keep_extra_data)
       response = @http_client.post("events/#{key}/actions/change-object-status", request)
-      BestAvailableObjects.new(response)
+      Domain::BestAvailableObjects.new(response)
     end
 
-    def book_best_available(key, number, categories: nil, hold_token: nil, order_id: nil, keep_extra_data: nil, extra_data: nil, ticket_types: nil, ignore_channels: nil, channel_keys: nil)
-      change_best_available_object_status(key, number, Seatsio::EventObjectInfo::BOOKED, categories: categories, hold_token: hold_token, order_id: order_id, keep_extra_data: keep_extra_data, extra_data: extra_data, ticket_types: ticket_types, ignore_channels: ignore_channels, channel_keys: channel_keys)
+    def book_best_available(key, number, categories: nil, hold_token: nil, order_id: nil, keep_extra_data: nil, extra_data: nil)
+      change_best_available_object_status(key, number, Domain::ObjectStatus::BOOKED, categories: categories, hold_token: hold_token, order_id: order_id, keep_extra_data: keep_extra_data, extra_data: extra_data)
     end
 
-    def hold_best_available(key, number, hold_token, categories: nil, order_id: nil, keep_extra_data: nil, extra_data: nil, ticket_types: nil, ignore_channels: nil, channel_keys: nil)
-      change_best_available_object_status(key, number, Seatsio::EventObjectInfo::HELD, categories: categories, hold_token: hold_token, order_id: order_id, keep_extra_data: keep_extra_data, extra_data: extra_data, ticket_types: ticket_types, ignore_channels: ignore_channels, channel_keys: channel_keys)
+    def hold_best_available(key, number, hold_token, categories: nil, order_id: nil, keep_extra_data: nil, extra_data: nil)
+      change_best_available_object_status(key, number, Domain::ObjectStatus::HELD, categories: categories, hold_token: hold_token, order_id: order_id, keep_extra_data: keep_extra_data, extra_data: extra_data)
     end
 
-    def release(event_key_or_keys, object_or_objects, hold_token: nil, order_id: nil, keep_extra_data: nil, ignore_channels: nil, channel_keys: nil)
-      change_object_status(event_key_or_keys, object_or_objects, Seatsio::EventObjectInfo::FREE, hold_token: hold_token, order_id: order_id, keep_extra_data: keep_extra_data, ignore_channels: ignore_channels, channel_keys: channel_keys)
+    def release(event_key_or_keys, object_or_objects, hold_token = nil, order_id = nil, keep_extra_data = nil)
+      change_object_status(event_key_or_keys, object_or_objects, Domain::ObjectStatus::FREE, hold_token, order_id, keep_extra_data)
     end
 
     def delete(key:)
       @http_client.delete("/events/#{key}")
     end
 
+
     def retrieve(key:)
       response = @http_client.get("events/#{key}")
-      Event.new(response)
+      Domain::Event.new(response)
     end
 
     def list
-      Pagination::Cursor.new(Event, 'events', @http_client)
+      Pagination::Cursor.new(Domain::Event, 'events', @http_client)
     end
 
     def list_status_changes(key, object_id = nil)
       if object_id != nil
         status_changes_for_object key: key, object_id: object_id
       else
-        Pagination::Cursor.new(StatusChange, "/events/#{key}/status-changes", @http_client)
+        Pagination::Cursor.new(Domain::StatusChange, "/events/#{key}/status-changes", @http_client)
       end
     end
 
     def status_changes_for_object(key:, object_id:)
-      Pagination::Cursor.new(StatusChange, "/events/#{key}/objects/#{object_id}/status-changes", @http_client)
+      Pagination::Cursor.new(Domain::StatusChange, "/events/#{key}/objects/#{object_id}/status-changes", @http_client)
     end
 
     def mark_as_not_for_sale(key:, objects: nil, categories: nil)
@@ -139,14 +134,6 @@ module Seatsio
     def mark_as_for_sale(key:, objects: nil, categories: nil)
       request = build_parameters_for_mark_as_sale objects: objects, categories: categories
       @http_client.post("events/#{key}/actions/mark-as-for-sale", request)
-    end
-
-    def update_channels(key:, channels:)
-      @http_client.post("events/#{key}/channels/update", channels: channels)
-    end
-
-    def assign_objects_to_channels(key:, channelConfig:)
-      @http_client.post("events/#{key}/channels/assign-objects", channelConfig: channelConfig)
     end
 
     private
@@ -164,12 +151,12 @@ module Seatsio
       payload
     end
 
-    def build_event_request(chart_key: nil, event_key: nil, table_booking_config: nil, social_distancing_ruleset_key: nil)
+    def build_event_request(chart_key: nil, event_key: nil, book_whole_tables: nil, table_booking_modes: nil)
       result = {}
       result["chartKey"] = chart_key if chart_key
       result["eventKey"] = event_key if event_key
-      result["tableBookingConfig"] = table_booking_config_to_request(table_booking_config) if table_booking_config != nil
-      result["socialDistancingRulesetKey"] = social_distancing_ruleset_key if social_distancing_ruleset_key != nil
+      result["bookWholeTables"] = book_whole_tables if book_whole_tables != nil
+      result["tableBookingModes"] = table_booking_modes if table_booking_modes != nil
       result
     end
 
@@ -185,16 +172,10 @@ module Seatsio
       params.each do |param|
         r = {}
         r["eventKey"] = param[:event_key] if param[:event_key] != nil
-        r["tableBookingConfig"] = table_booking_config_to_request(param[:table_booking_config]) if param[:table_booking_config] != nil
+        r["bookWholeTables"] = param[:book_whole_tables] if param[:book_whole_tables] != nil
+        r["tableBookingModes"] = param[:table_booking_modes] if param[:table_booking_modes] != nil
         result.push(r)
       end
-      result
-    end
-
-    def table_booking_config_to_request(table_booking_config)
-      result = {}
-      result["mode"] = table_booking_config.mode
-      result["tables"] = table_booking_config.tables if table_booking_config.tables != nil
       result
     end
 
